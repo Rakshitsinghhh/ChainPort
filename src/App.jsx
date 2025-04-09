@@ -25,7 +25,6 @@ import "@solana/wallet-adapter-react-ui/styles.css";
 
 const endpoint = "https://api.devnet.solana.com";
 
-// Dark theme styles
 const darkTheme = {
   backgroundColor: "#121212",
   color: "#ffffff",
@@ -42,7 +41,7 @@ const darkTheme = {
 
 function AirdropSection() {
   const { connection } = useConnection();
-  const { publicKey, connected } = useWallet();
+  const { publicKey } = useWallet();
   const [balance, setBalance] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -67,13 +66,8 @@ function AirdropSection() {
     const amountInput = document.getElementById("amount");
     const amount = parseFloat(amountInput.value);
 
-    if (isNaN(amount)) {
-      alert("Please enter a valid amount");
-      return;
-    }
-
-    if (amount <= 0) {
-      alert("Amount must be greater than 0");
+    if (isNaN(amount) || amount <= 0) {
+      alert("Please enter valid amount > 0");
       return;
     }
 
@@ -88,9 +82,9 @@ function AirdropSection() {
 
       await connection.confirmTransaction(signature, "finalized");
       await getBalance();
-      alert(`Successfully airdropped ${amount} SOL!`);
+      alert(`✅ Airdropped ${amount} SOL!`);
     } catch (err) {
-      setError("Failed to request airdrop");
+      setError("Airdrop failed: " + err.message);
       console.error(err);
     } finally {
       setLoading(false);
@@ -103,7 +97,9 @@ function AirdropSection() {
 
   return (
     <div style={{ margin: "20px 0" }}>
-      <h2 style={{ color: darkTheme.color }}>Balance: {balance !== null ? `${balance} SOL` : "N/A"}</h2>
+      <h2 style={{ color: darkTheme.color }}>
+        Balance: {balance !== null ? `${balance.toFixed(2)} SOL` : "N/A"}
+      </h2>
       <div style={{ margin: "10px 0" }}>
         <input
           id="amount"
@@ -122,7 +118,7 @@ function AirdropSection() {
         />
         <button
           onClick={requestAirdrop}
-          disabled={loading || !connected}
+          disabled={loading || !publicKey}
           style={{
             padding: "8px 16px",
             backgroundColor: darkTheme.buttonPrimary,
@@ -141,7 +137,7 @@ function AirdropSection() {
 }
 
 function Sender() {
-  const { publicKey, sendTransaction, connected } = useWallet();
+  const { publicKey, sendTransaction } = useWallet();
   const { connection } = useConnection();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -154,12 +150,13 @@ function Sender() {
 
     const to = prompt("Enter recipient address:");
     if (!to) {
-      alert("Recipient address is required");
+      alert("Recipient address required");
       return;
     }
 
+    let toPublicKey;
     try {
-      new PublicKey(to);
+      toPublicKey = new PublicKey(to);
     } catch {
       alert("Invalid recipient address");
       return;
@@ -169,32 +166,72 @@ function Sender() {
     const amount = parseFloat(amountInput);
 
     if (isNaN(amount) || amount <= 0) {
-      alert("Please enter a valid amount greater than 0");
+      alert("Invalid amount > 0 required");
       return;
     }
 
     setLoading(true);
     setError(null);
+    let signature;
+    let retries = 3;
 
     try {
-      const transaction = new Transaction().add(
-        SystemProgram.transfer({
-          fromPubkey: publicKey,
-          toPubkey: new PublicKey(to),
-          lamports: amount * LAMPORTS_PER_SOL,
-        })
-      );
+      while (retries > 0) {
+        try {
+          // Get the latest blockhash with context
+          const { context: { slot: minContextSlot }, value: { blockhash, lastValidBlockHeight } } = 
+            await connection.getLatestBlockhashAndContext();
+          
+          // Create transaction with explicit recentBlockhash
+          const transaction = new Transaction({
+            recentBlockhash: blockhash,
+            feePayer: publicKey,
+          }).add(
+            SystemProgram.transfer({
+              fromPubkey: publicKey,
+              toPubkey: toPublicKey,
+              lamports: amount * LAMPORTS_PER_SOL,
+            })
+          );
 
-      transaction.recentBlockhash = (await connection.getRecentBlockhash()).blockhash;
-      transaction.feePayer = publicKey;
+          // Send with minContextSlot to ensure slot consistency
+          signature = await sendTransaction(transaction, connection, { minContextSlot });
 
-      const signature = await sendTransaction(transaction, connection);
-      await connection.confirmTransaction(signature, "confirmed");
-      alert(`Successfully sent ${amount} SOL to ${to}`);
+          // Confirm with all necessary parameters
+          const confirmation = await connection.confirmTransaction({
+            signature,
+            blockhash,
+            lastValidBlockHeight,
+            minContextSlot, // Include minContextSlot in confirmation
+          }, "confirmed");
+
+          if (confirmation.value.err) {
+            throw new Error("Transaction confirmation failed");
+          }
+
+          alert(`✅ Sent ${amount} SOL to ${to}`);
+          return;
+        } catch (err) {
+          if (err?.message.includes("Blockhash") && retries > 0) {
+            retries--;
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            continue;
+          }
+          throw err;
+        }
+      }
     } catch (err) {
-      setError("Transaction failed");
-      console.error(err);
-      alert("Transaction failed. Please try again.");
+      let errorMessage = err.message;
+      // Handle SendTransactionError specifically
+      if (err?.name === "SendTransactionError") {
+        errorMessage = [
+          `Transaction failed: ${err.message}`,
+          ...(err.logs || []),
+        ].join('\n');
+      }
+      setError(errorMessage);
+      console.error("Transaction error:", err);
+      alert(`❌ Failed: ${errorMessage}`);
     } finally {
       setLoading(false);
     }
@@ -204,7 +241,7 @@ function Sender() {
     <div style={{ margin: "20px 0" }}>
       <button
         onClick={handleSend}
-        disabled={loading || !connected}
+        disabled={loading || !publicKey}
         style={{
           padding: "10px 20px",
           backgroundColor: darkTheme.buttonPrimary,
@@ -216,7 +253,15 @@ function Sender() {
       >
         {loading ? "Sending..." : "Send SOL"}
       </button>
-      {error && <p style={{ color: darkTheme.errorColor }}>{error}</p>}
+      {error && (
+        <pre style={{ 
+          color: darkTheme.errorColor,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-all"
+        }}>
+          {error}
+        </pre>
+      )}
     </div>
   );
 }
@@ -230,12 +275,12 @@ function MessageSigner() {
 
   const handleSignMessage = async () => {
     if (!publicKey) {
-      alert("Please connect your wallet first.");
+      alert("Connect wallet first");
       return;
     }
 
     if (!message.trim()) {
-      alert("Please enter a message to sign");
+      alert("Enter message to sign");
       return;
     }
 
@@ -244,14 +289,10 @@ function MessageSigner() {
 
     try {
       const messageBytes = new TextEncoder().encode(message);
-      const signature = await signMessage(messageBytes);
-      const signatureHex = Array.from(signature)
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join('');
-      
-      setSignature(signatureHex);
+      const sig = await signMessage(messageBytes);
+      setSignature(Buffer.from(sig).toString("hex"));
     } catch (err) {
-      setError("Failed to sign message");
+      setError("Signing failed: " + err.message);
       console.error(err);
     } finally {
       setLoading(false);
@@ -265,7 +306,7 @@ function MessageSigner() {
         <textarea
           value={message}
           onChange={(e) => setMessage(e.target.value)}
-          placeholder="Enter message to sign"
+          placeholder="Message to sign"
           style={{
             padding: "8px",
             marginRight: "10px",
@@ -338,7 +379,9 @@ function App() {
             <div style={{
               display: "flex",
               justifyContent: "space-between",
-              marginBottom: "30px"
+              marginBottom: "30px",
+              gap: "10px",
+              flexWrap: "wrap"
             }}>
               <WalletMultiButton style={{
                 backgroundColor: darkTheme.buttonPrimary,
@@ -363,7 +406,7 @@ function App() {
               marginBottom: "20px",
               border: `1px solid ${darkTheme.borderColor}`
             }}>
-              <h2 style={{ color: darkTheme.linkColor }}>Airdrop SOL (Devnet Only)</h2>
+              <h2 style={{ color: darkTheme.linkColor }}>Airdrop SOL (Devnet)</h2>
               <AirdropSection />
             </div>
             
@@ -374,7 +417,7 @@ function App() {
               marginBottom: "20px",
               border: `1px solid ${darkTheme.borderColor}`
             }}>
-              <h2 style={{ color: darkTheme.linkColor }}>Send SOL</h2>
+              <h2 style={{ color: darkTheme.linkColor }}>Transfer SOL</h2>
               <Sender />
             </div>
 
