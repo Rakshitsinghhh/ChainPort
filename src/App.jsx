@@ -426,7 +426,7 @@ function App() {
             color: darkTheme.color,
             minHeight: "100vh"
           }}>
-            <h1 style={{ color: darkTheme.linkColor }}>Solana Wallet Demo</h1>
+            <h1 style={{ color: darkTheme.linkColor }}>Solana Wallet Adapter</h1>
             <div style={{
               display: "flex",
               justifyContent: "space-between",

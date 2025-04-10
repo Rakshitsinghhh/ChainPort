@@ -1,0 +1,11 @@
+#root {
+    background-color: black;
+    min-height: 120vh; /* Ensure it covers full screen */
+  }
+
+html, body {
+margin: 0;
+padding: 0;
+background-color: black; /* Ensure body is also black */
+}
+  
