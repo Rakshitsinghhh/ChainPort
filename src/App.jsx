@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useState, useMemo } from "react";
+import { ed25519 } from "@noble/curves/ed25519";
+// import * as ed25519 from "@noble/ed25519";
 import {
   ConnectionProvider,
   WalletProvider,
@@ -341,6 +343,15 @@ function MessageSigner() {
     try {
       const messageBytes = new TextEncoder().encode(message);
       const sig = await signMessage(messageBytes);
+
+      const isValid = ed25519.verify(sig, messageBytes, publicKey.toBytes());
+      if (!isValid) throw new Error("Message signature invalid");
+      if(isValid)
+      {
+        alert('success');
+      }
+
+
       setSignature(Buffer.from(sig).toString("hex"));
     } catch (err) {
       setError("Signing failed: " + err.message);
