@@ -15,6 +15,7 @@ import {
   PublicKey,
   SystemProgram,
   Transaction,
+  SendTransactionError,
 } from "@solana/web3.js";
 import {
   PhantomWalletAdapter,
@@ -139,129 +140,179 @@ function AirdropSection() {
 function Sender() {
   const { publicKey, sendTransaction } = useWallet();
   const { connection } = useConnection();
+  const [toAddress, setToAddress] = useState("");
+  const [sendAmount, setSendAmount] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   const handleSend = async () => {
     if (!publicKey) {
-      alert("Please connect your wallet first.");
+      alert("Please connect your wallet.");
       return;
     }
 
-    const to = prompt("Enter recipient address:");
-    if (!to) {
-      alert("Recipient address required");
-      return;
-    }
-
-    let toPublicKey;
-    try {
-      toPublicKey = new PublicKey(to);
-    } catch {
-      alert("Invalid recipient address");
-      return;
-    }
-
-    const amountInput = prompt("Enter amount in SOL:");
-    const amount = parseFloat(amountInput);
-
+    const amount = parseFloat(sendAmount);
     if (isNaN(amount) || amount <= 0) {
-      alert("Invalid amount > 0 required");
+      alert("Please enter a valid amount greater than 0.");
+      return;
+    }
+
+    let toPubkey;
+    try {
+      toPubkey = new PublicKey(toAddress);
+    } catch (err) {
+      alert("Invalid recipient address.");
       return;
     }
 
     setLoading(true);
     setError(null);
-    let signature;
-    let retries = 3;
 
     try {
-      while (retries > 0) {
-        try {
-          // Get the latest blockhash with context
-          const { context: { slot: minContextSlot }, value: { blockhash, lastValidBlockHeight } } = 
-            await connection.getLatestBlockhashAndContext();
-          
-          // Create transaction with explicit recentBlockhash
-          const transaction = new Transaction({
-            recentBlockhash: blockhash,
-            feePayer: publicKey,
-          }).add(
-            SystemProgram.transfer({
-              fromPubkey: publicKey,
-              toPubkey: toPublicKey,
-              lamports: amount * LAMPORTS_PER_SOL,
-            })
-          );
+      // Step 1: Get fresh blockhash and last valid block height
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+      
+      // Step 2: Create transaction with all required parameters
+      const transaction = new Transaction({
+        feePayer: publicKey,
+        recentBlockhash: blockhash
+      }).add(
+        SystemProgram.transfer({
+          fromPubkey: publicKey,
+          toPubkey: toPubkey,
+          lamports: Math.round(amount * LAMPORTS_PER_SOL),
+        })
+      );
 
-          // Send with minContextSlot to ensure slot consistency
-          signature = await sendTransaction(transaction, connection, { minContextSlot });
+      // Step 3: Send transaction (wallet will sign it)
+      const signature = await sendTransaction(transaction, connection);
+      console.log('Transaction submitted:', signature);
 
-          // Confirm with all necessary parameters
-          const confirmation = await connection.confirmTransaction({
-            signature,
-            blockhash,
-            lastValidBlockHeight,
-            minContextSlot, // Include minContextSlot in confirmation
-          }, "confirmed");
+      // Step 4: Implement robust confirmation with retries
+      const result = await confirmTransactionWithRetry(
+        connection,
+        signature,
+        blockhash,
+        lastValidBlockHeight
+      );
 
-          if (confirmation.value.err) {
-            throw new Error("Transaction confirmation failed");
-          }
-
-          alert(`✅ Sent ${amount} SOL to ${to}`);
-          return;
-        } catch (err) {
-          if (err?.message.includes("Blockhash") && retries > 0) {
-            retries--;
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            continue;
-          }
-          throw err;
-        }
+      if (result === 'success') {
+        alert(`✅ Success! Transaction signature: ${signature}`);
+      } else {
+        throw new Error('Transaction confirmation timed out');
       }
     } catch (err) {
-      let errorMessage = err.message;
-      // Handle SendTransactionError specifically
-      if (err?.name === "SendTransactionError") {
+      let errorMessage = 'Transaction failed';
+      if (err instanceof SendTransactionError) {
         errorMessage = [
-          `Transaction failed: ${err.message}`,
-          ...(err.logs || []),
+          `Error: ${err.message}`,
+          `Logs: ${err.logs?.join('\n') || 'No logs available'}`
         ].join('\n');
       }
+      
       setError(errorMessage);
-      console.error("Transaction error:", err);
-      alert(`❌ Failed: ${errorMessage}`);
+      console.error('Transaction error:', err);
     } finally {
       setLoading(false);
     }
   };
 
+  // Helper function for robust confirmation with retries
+  async function confirmTransactionWithRetry(
+    connection,
+    signature,
+    blockhash,
+    lastValidBlockHeight,
+    timeout = 60000, // 60 seconds timeout
+    retryInterval = 2000 // 2 seconds between retries
+  ) {
+    const startTime = Date.now();
+    
+    while (Date.now() - startTime < timeout) {
+      try {
+        const confirmation = await connection.confirmTransaction({
+          signature,
+          blockhash,
+          lastValidBlockHeight,
+        }, 'confirmed');
+
+        if (confirmation.value.err) {
+          throw new Error('Transaction failed');
+        }
+        
+        return 'success';
+      } catch (err) {
+        // If blockhash expired, get a new one and try again
+        if (err.message.includes('Blockhash not found') || 
+            err.message.includes('blockhash expired')) {
+          console.log('Blockhash expired, getting new one...');
+          const newBlockData = await connection.getLatestBlockhash('confirmed');
+          blockhash = newBlockData.blockhash;
+          lastValidBlockHeight = newBlockData.lastValidBlockHeight;
+        } else {
+          throw err;
+        }
+      }
+      
+      // Wait before retrying
+      await new Promise(resolve => setTimeout(resolve, retryInterval));
+    }
+    
+    return 'timeout';
+  }
+
   return (
     <div style={{ margin: "20px 0" }}>
-      <button
-        onClick={handleSend}
-        disabled={loading || !publicKey}
-        style={{
-          padding: "10px 20px",
-          backgroundColor: darkTheme.buttonPrimary,
-          color: darkTheme.buttonText,
-          border: "none",
-          borderRadius: "4px",
-          cursor: "pointer"
-        }}
-      >
-        {loading ? "Sending..." : "Send SOL"}
-      </button>
-      {error && (
-        <pre style={{ 
-          color: darkTheme.errorColor,
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-all"
-        }}>
-          {error}
-        </pre>
-      )}
+      <div style={{ margin: "10px 0" }}>
+        <input
+          type="text"
+          placeholder="Recipient Address"
+          value={toAddress}
+          onChange={(e) => setToAddress(e.target.value)}
+          style={{
+            padding: "8px",
+            margin: "5px 0",
+            width: "100%",
+            backgroundColor: darkTheme.inputBackground,
+            color: darkTheme.color,
+            border: `1px solid ${darkTheme.borderColor}`,
+            borderRadius: "4px",
+          }}
+        />
+        <input
+          type="number"
+          placeholder="Amount in SOL"
+          step="0.1"
+          min="0"
+          value={sendAmount}
+          onChange={(e) => setSendAmount(e.target.value)}
+          style={{
+            padding: "8px",
+            margin: "5px 0",
+            width: "100%",
+            backgroundColor: darkTheme.inputBackground,
+            color: darkTheme.color,
+            border: `1px solid ${darkTheme.borderColor}`,
+            borderRadius: "4px",
+          }}
+        />
+        <button
+          onClick={handleSend}
+          disabled={loading || !publicKey}
+          style={{
+            padding: "8px 16px",
+            backgroundColor: darkTheme.buttonPrimary,
+            color: darkTheme.buttonText,
+            border: "none",
+            borderRadius: "4px",
+            cursor: "pointer",
+            marginTop: "10px",
+          }}
+        >
+          {loading ? "Sending..." : "Send SOL"}
+        </button>
+      </div>
+      {error && <p style={{ color: darkTheme.errorColor }}>{error}</p>}
     </div>
   );
 }
