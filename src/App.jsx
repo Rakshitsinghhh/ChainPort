@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState, useMemo } from "react";
 import { ed25519 } from "@noble/curves/ed25519";
 // import * as ed25519 from "@noble/ed25519";
+import axios from 'axios';
 import {
   ConnectionProvider,
   WalletProvider,
@@ -41,6 +42,131 @@ const darkTheme = {
   errorColor: "#F44336",
   linkColor: "#BB86FC",
 };
+
+function Swapper() {
+  const [amount, setAmount] = useState("");
+  const [fromToken, setFromToken] = useState("");
+  const [toToken, setToToken] = useState("");
+  const [quoteResult, setQuoteResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const getQuote = async () => {
+    if (!amount) {
+      setError("Please fill in amount");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await axios.get(`https://quote-api.jup.ag/v6/quote`, {
+        params: {
+          inputMint: "So11111111111111111111111111111111111111112",
+          outputMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          amount: Math.round(Number(amount) * 1000000000).toString(),
+          slippageBps: 50
+        },
+        headers: { 
+          'Accept': 'application/json'
+        }
+      });
+
+      setQuoteResult(Number(response.data.swapUsdValue));
+    } catch (error) {
+      setError(error.response?.data?.message || error.message || "Failed to get quote");
+      console.error(error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ margin: "20px 0" }}>
+      <h2 style={{ color: darkTheme.color }}>Jupiter Swap Quote</h2>
+      <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+        <input
+          type="number"
+          value={amount}
+          onChange={(e) => setAmount(e.target.value)}
+          placeholder="Amount in SOL"
+          style={{
+            padding: "8px",
+            backgroundColor: darkTheme.inputBackground,
+            color: darkTheme.color,
+            border: `1px solid ${darkTheme.borderColor}`,
+            borderRadius: "4px"
+          }}
+        />
+        <input
+          type="string"
+          id="toToken"
+          placeholder="to mint address"
+          style={{
+            padding: "8px",
+            backgroundColor: darkTheme.inputBackground,
+            color: darkTheme.color,
+            border: `1px solid ${darkTheme.borderColor}`,
+            borderRadius: "4px"
+          }}
+        />
+        <input
+          type="string"
+          id="toToken"
+          placeholder="to mint address"
+          style={{
+            padding: "8px",
+            backgroundColor: darkTheme.inputBackground,
+            color: darkTheme.color,
+            border: `1px solid ${darkTheme.borderColor}`,
+            borderRadius: "4px"
+          }}
+        />
+        <button
+          onClick={getQuote}
+          disabled={loading}
+          style={{
+            padding: "8px 16px",
+            backgroundColor: darkTheme.buttonPrimary,
+            color: darkTheme.buttonText,
+            border: "none",
+            borderRadius: "4px",
+            cursor: "pointer"
+          }}
+        >
+          {loading ? "Getting Quote..." : "Get SOL to USDC Quote"}
+        </button>
+      </div>
+
+      {error && (
+        <p style={{ color: darkTheme.errorColor, marginTop: "10px" }}>
+          {error}
+        </p>
+      )}
+
+      {quoteResult && (
+        <div style={{ 
+          marginTop: "20px",
+          padding: "15px",
+          backgroundColor: darkTheme.cardBackground,
+          borderRadius: "4px",
+          border: `1px solid ${darkTheme.borderColor}`
+        }}>
+          <h2 style={{ color: darkTheme.color, marginBottom: "10px" }}>Quote</h2>
+          <pre style={{ 
+            color: darkTheme.color,
+            overflow: "auto",
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-all"
+          }}>
+            {JSON.stringify(quoteResult, null, 2)}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function AirdropSection() {
   const { connection } = useConnection();
@@ -490,6 +616,15 @@ function App() {
               border: `1px solid ${darkTheme.borderColor}`
             }}>
               <MessageSigner />
+            </div>
+
+            <div style={{
+              backgroundColor: darkTheme.cardBackground,
+              padding: "20px",
+              borderRadius: "8px",
+              border: `1px solid ${darkTheme.borderColor}`
+            }}>
+              <Swapper />
             </div>
           </div>
         </WalletModalProvider>
